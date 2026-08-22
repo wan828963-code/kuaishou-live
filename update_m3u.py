@@ -55,10 +55,7 @@ def parse_args(argv):
 
 
 def load_sources(pages_override=None):
-    """解析 sources.txt，支持：
-       - HOT / HOT:50 / https://live.kuaishou.com/live/HOT:50
-       - https://live.kuaishou.com/u/Diyicaituan (个人主页)
-    """
+    """解析 sources.txt，支持 HOT 和 中文主播昵称/URL"""
     if not os.path.exists(SOURCES_PATH):
         raise SystemExit(f'缺少来源配置文件 {SOURCES_PATH}')
     
@@ -70,11 +67,13 @@ def load_sources(pages_override=None):
         if not line or line.startswith('#'):
             continue
         
-        # 判断是否为个人主页链接
         if '/u/' in line:
             user_id = line.split('/u/')[-1].split('/')[0].split('?')[0]
             if user_id:
                 user_sources.append(user_id)
+        elif not line.startswith('HOT'):
+            # 直接填中文名字（如：第一财团）
+            user_sources.append(line)
         else:
             pages = DEFAULT_PAGES if pages_override is None else pages_override
             name = line
@@ -90,9 +89,6 @@ def load_sources(pages_override=None):
             pages = max(1, min(pages, MAX_PAGES))
             hot_sources.append((name.upper(), pages))
 
-    if not hot_sources and not user_sources:
-        raise SystemExit('sources.txt 中没有有效来源')
-        
     return hot_sources, user_sources
 
 
@@ -113,47 +109,19 @@ def fetch_page(source, page):
 
 
 def fetch_user(user_id, all_hot_rooms=None):
-    """获取指定主播：优先调个人 API，若被风控（海外IP拦截），则在热门列表中兜底搜索"""
-    url = f'https://live.kuaishou.com/live_api/profile/public?principalId={user_id}'
-    timestamp = str(int(time.time() * 1000))
-    fake_did = f"web_{timestamp}999"
-    headers = {
-        'User-Agent': UA,
-        'Referer': f'https://live.kuaishou.com/u/{user_id}',
-        'Cookie': f'did={fake_did}; clientid=3;',
-    }
-    
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
-            body = json.load(r)
-            
-        data = body.get('data', {})
-        live_data = data.get('live')
-        
-        # 1. 个人 API 成功获取
-        if live_data and live_data.get('living'):
-            if 'author' not in live_data and 'userInfo' in data:
-                live_data['author'] = data['userInfo']
-            author_name = live_data.get('author', {}).get('name') or user_id
-            print(f'  [主播 {author_name}({user_id})] 通过个人接口获取成功！')
-            return live_data
-    except Exception:
-        pass
-
-    # 2. 兜底方案：如果个人接口被快手风控拦截，从热门列表的 2000+ 房间中寻找该主播
+    """直接在已抓取的热门列表中精确匹配昵称（如 '第一财团'）"""
     if all_hot_rooms:
         for lid, room in all_hot_rooms.items():
             author = room.get('author') or {}
-            kwai_id = author.get('id') or author.get('principalId') or ''
             name = author.get('name') or ''
+            kwai_id = author.get('id') or author.get('principalId') or ''
             
-            # 比对 ID 或 账号/昵称
-            if user_id.lower() in kwai_id.lower() or user_id in name:
-                print(f'  [主播 {name}({user_id})] 从热门列表中匹配成功！')
+            # 同时匹配中文昵称、拼音 ID 或快手号
+            if user_id in name or user_id.lower() in kwai_id.lower():
+                print(f'  [主播 {name}] 成功在热门直播列表中匹配找到！')
                 return room
 
-    print(f'  [主播 {user_id}] 未开播或未在热门列表中找到')
+    print(f'  [主播 {user_id}] 未在列表中找到')
     return None
 
 
@@ -219,7 +187,7 @@ def run(dry_run=False, pages_override=None):
                 except Exception as e:
                     print(f'  [{s}] 整个来源失败: {e}')
 
-    # 2. 抓取指定个人主播（传入热门列表做兜底）
+    # 2. 抓取指定个人主播（直接从热门列表中匹配）
     if user_sources:
         for u in user_sources:
             room = fetch_user(u, all_hot_rooms=all_rooms)
