@@ -113,28 +113,70 @@ def fetch_page(source, page):
 
 
 def fetch_user(user_id):
-    """抓取单个指定主播的直播状态及数据。"""
-    url = f'{USER_API}?principalId={user_id}'
-    req = urllib.request.Request(url, headers={
+    """通过 GraphQL 查询主播，带上伪造的 Cookie 绕过风控检测"""
+    graphql_url = 'https://live.kuaishou.com/graphql'
+    
+    # 模拟网页端需要的完整查询结构
+    payload = {
+        "operationName": "webLiveDetail",
+        "variables": {"principalId": user_id},
+        "query": """
+            query webLiveDetail($principalId: String) {
+                webLiveDetail(principalId: $principalId) {
+                    liveStream
+                    author {
+                        id
+                        name
+                        avatar
+                    }
+                }
+            }
+        """
+    }
+    
+    # 核心：伪造 did Cookie 避开无 Cookie 拦截
+    timestamp = str(int(time.time() * 1000))
+    fake_did = f"web_{timestamp}888"
+    
+    headers = {
         'User-Agent': UA,
         'Referer': f'https://live.kuaishou.com/u/{user_id}',
-    })
+        'Content-Type': 'application/json',
+        'Cookie': f'did={fake_did}; didv={timestamp}; clientid=3; kuaishou.live.web_st=0',
+        'Origin': 'https://live.kuaishou.com',
+    }
+    
     try:
+        req = urllib.request.Request(
+            graphql_url, 
+            data=json.dumps(payload).encode('utf-8'), 
+            headers=headers, 
+            method='POST'
+        )
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
-            body = json.load(r)
-        data = body.get('data', {})
-        live_data = data.get('live', {})
+            res = json.load(r)
+            
+        data = res.get('data', {}).get('webLiveDetail', {})
+        live_stream = data.get('liveStream')
         
-        if not live_data or not live_data.get('living'):
-            user_name = data.get('userInfo', {}).get('name', user_id)
-            print(f'  [主播 {user_name}({user_id})] 未开播')
+        if not live_stream:
+            author_name = data.get('author', {}).get('name') or user_id
+            print(f'  [主播 {author_name}({user_id})] 未解析到直播流（请确认是否在播）')
             return None
-            
-        # 补全作者信息以匹配通用数据结构
-        if 'author' not in live_data and 'userInfo' in data:
-            live_data['author'] = data['userInfo']
-            
-        return live_data
+
+        # 整理结构以兼容 room_to_entry 转换
+        room = {
+            'id': live_stream.get('id') or user_id,
+            'caption': live_stream.get('caption') or '直播间',
+            'author': data.get('author', {}) or {'name': user_id},
+            'gameInfo': {'name': live_stream.get('gameName') or '自定义主播'},
+            'playUrls': live_stream.get('playUrls') or []
+        }
+        
+        author_name = room['author'].get('name', user_id)
+        print(f'  [主播 {author_name}({user_id})] 成功获取直播流')
+        return room
+        
     except Exception as e:
         print(f'  [主播 {user_id}] 抓取失败: {e}')
         return None
