@@ -1,114 +1,67 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-抓取指定快手主播的直播地址（使用 Playwright 浏览器自动化）
-"""
 import os
 import re
 import time
-from playwright.sync_api import sync_playwright
+import urllib.request
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 M3U_PATH = os.path.join(BASE_DIR, 'teacher.m3u')
+UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 TEACHERS = [
-    {"id": "SJJC6688", "name": "爽姐讲财", "group": "财经"},
-    {"id": "Diyicaituan", "name": "第一财团", "group": "财经"},
+    {"id": "SJJC6688", "name": "爽姐讲财"},
+    {"id": "Diyicaituan", "name": "第一财团"},
 ]
 
+def fetch_live_url_direct(user_id):
+    """从主播页面直接抓取 .flv 地址（不依赖JS执行）"""
+    url = f'https://live.kuaishou.com/u/{user_id}'
+    req = urllib.request.Request(url, headers={'User-Agent': UA})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            html = r.read().decode('utf-8', errors='ignore')
+    except Exception as e:
+        print(f'  ⚠️ 页面获取失败: {e}')
+        return None
 
-def fetch_live_url_with_browser(user_id):
-    """使用浏览器访问主播页面，获取直播流地址"""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        
-        url = f'https://live.kuaishou.com/u/{user_id}'
-        print(f'  浏览器访问: {url}')
-        
-        try:
-            page.goto(url, timeout=30000)
-            page.wait_for_timeout(5000)  # 等待5秒让页面加载完成
-            
-            # 获取页面 HTML
-            html = page.content()
-            browser.close()
-            
-            # 从 HTML 中提取 .flv 地址
-            match = re.search(r'https://[^\s"\']+\.flv[^\s"\']*', html)
-            if match:
-                return match.group(0)
-            
-            # 尝试从 __INITIAL_STATE__ 提取
-            match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?});', html, re.DOTALL)
-            if match:
-                import json
-                try:
-                    data = json.loads(match.group(1))
-                    for path in ['liveStream', 'room', 'detail']:
-                        if path in data:
-                            play_urls = data[path].get('playUrls', [])
-                            if play_urls:
-                                for pu in play_urls:
-                                    reps = pu.get('adaptationSet', {}).get('representation', [])
-                                    if reps:
-                                        best = sorted(reps, key=lambda x: (x.get('level', 0), x.get('bitrate', 0)))[-1]
-                                        stream_url = best.get('url')
-                                        if stream_url and 'flv' in stream_url:
-                                            return stream_url
-                except:
-                    pass
-            
-            return None
-            
-        except Exception as e:
-            print(f'  浏览器访问失败: {e}')
-            browser.close()
-            return None
-
+    # 核心方法：在一个较宽的上下文中搜索 .flv 地址
+    # 匹配类似 https://...xxx.flv?hwTime=... 的链接
+    matches = re.findall(r'https://[^\s"\'<>]+\.flv[^\s"\'<>]*', html)
+    if matches:
+        # 去重并返回第一个有效的地址
+        seen = set()
+        for m in matches:
+            if m not in seen:
+                seen.add(m)
+                # 简单过滤掉明显不是直播地址的链接（如日志上报地址）
+                if 'flv' in m and 'pull' in m:
+                    return m
+        return matches[0]  # 如果没找到 pull，返回第一个
+    return None
 
 def generate_m3u():
-    lines = [
-        '#EXTM3U',
-        '# 生成时间: ' + time.strftime("%Y-%m-%d %H:%M:%S"),
-        '# 共 ' + str(len(TEACHERS)) + ' 个主播',
-        ''
-    ]
-    
+    lines = ['#EXTM3U', f'# 生成: {time.strftime("%Y-%m-%d %H:%M:%S")}']
     online_count = 0
-    online_list = []
-    
-    for teacher in TEACHERS:
-        user_id = teacher["id"]
-        name = teacher["name"]
-        group = teacher["group"]
-        
-        print('正在获取 ' + name + ' (' + user_id + ')...')
-        stream_url = fetch_live_url_with_browser(user_id)
-        
-        if stream_url:
-            lines.append('#EXTINF:-1 tvg-logo="" group-title="' + group + '" tvg-id="' + user_id + '", ' + name)
-            lines.append(stream_url)
-            lines.append('')
-            print('✅ 成功: ' + name)
+    for t in TEACHERS:
+        print(f'🔍 正在查找 {t["name"]} ({t["id"]})...')
+        url = fetch_live_url_direct(t["id"])
+        if url:
+            lines.append(f'#EXTINF:-1 tvg-logo="" group-title="财经" tvg-id="{t["id"]}", {t["name"]}')
+            lines.append(url)
+            print(f'✅ 成功: {t["name"]}')
             online_count += 1
-            online_list.append(name)
         else:
-            lines.append('#EXTINF:-1 tvg-logo="" group-title="' + group + '" tvg-id="' + user_id + '", ' + name + ' (未开播)')
+            lines.append(f'#EXTINF:-1 tvg-logo="" group-title="财经" tvg-id="{t["id"]}", {t["name"]} (未开播)')
             lines.append('# 未开播')
-            lines.append('')
-            print('❌ 未开播: ' + name)
-    
-    if online_list:
-        lines.append('# 在线主播：' + ', '.join(online_list))
-    lines.append('# 共 ' + str(len(TEACHERS)) + ' 个主播，在线 ' + str(online_count) + ' 个')
-    
+            print(f'❌ 未开播: {t["name"]}')
+    lines.append(f'# 在线: {online_count}/{len(TEACHERS)}')
     with open(M3U_PATH, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(lines) + '\n')
-    
-    print('已写入 ' + M3U_PATH)
+        f.write('\n'.join(lines))
+    print('✅ 更新完成!')
 
-
+if __name__ == '__main__':
+    generate_m3u()
 def main():
     print('=' * 40)
     print('快手专属直播源更新工具 (浏览器版)')
