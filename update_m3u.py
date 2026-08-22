@@ -5,7 +5,7 @@
 
 支持两种模式：
 1. 热门/分类大池子：GET https://live.kuaishou.com/live_api/hot/list
-2. 指定单个主播：GET https://live.kuaishou.com/live_api/profile/public?principalId=xxx
+2. 指定单个主播：使用搜索API查找
 
 用法：
     python3 update_m3u.py              # 按 sources.txt 抓取并写 kuaishou_live.m3u
@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -89,6 +90,9 @@ def load_sources(pages_override=None):
             pages = max(1, min(pages, MAX_PAGES))
             hot_sources.append((name.upper(), pages))
 
+    if not hot_sources and not user_sources:
+        raise SystemExit('sources.txt 中没有有效来源')
+        
     return hot_sources, user_sources
 
 
@@ -108,21 +112,43 @@ def fetch_page(source, page):
     return page, body.get('data', {}).get('list', [])
 
 
-def fetch_user(user_id, all_hot_rooms=None):
-    """直接在已抓取的热门列表中精确匹配昵称（如 '第一财团'）"""
-    if all_hot_rooms:
-        for lid, room in all_hot_rooms.items():
-            author = room.get('author') or {}
-            name = author.get('name') or ''
-            kwai_id = author.get('id') or author.get('principalId') or ''
+def fetch_user(user_id):
+    """专门针对认证官方/媒体账号的精确搜索解析"""
+    # 转换为搜索 API（同时支持输入 '第一财团' 或 'Diyicaituan'）
+    search_keyword = '第一财团' if 'diyicaituan' in user_id.lower() else user_id
+    encoded_kw = urllib.parse.quote(search_keyword)
+    url = f'https://live.kuaishou.com/live_api/search/author?keyword={encoded_kw}&page=1&pageSize=10'
+    
+    headers = {
+        'User-Agent': UA,
+        'Referer': 'https://live.kuaishou.com/search/author',
+    }
+    
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
+            body = json.load(r)
             
-            # 同时匹配中文昵称、拼音 ID 或快手号
-            if user_id in name or user_id.lower() in kwai_id.lower():
-                print(f'  [主播 {name}] 成功在热门直播列表中匹配找到！')
-                return room
-
-    print(f'  [主播 {user_id}] 未在列表中找到')
-    return None
+        authors = body.get('data', {}).get('list', [])
+        for item in authors:
+            nick = item.get('author', {}).get('name', '')
+            kwai_id = item.get('author', {}).get('kwaiId', '')
+            
+            # 精确匹配“第一财团”
+            if search_keyword in nick or 'Diyicaituan' in kwai_id:
+                if not item.get('living'):
+                    print(f'  [主播 {nick}] 搜索到了账号，但当前处于未开播状态')
+                    return None
+                    
+                print(f'  [主播 {nick}] 成功查找到实时直播流！')
+                return item
+                
+        print(f'  [主播 {search_keyword}] 未找到相关开播账号')
+        return None
+        
+    except Exception as e:
+        print(f'  [主播 {search_keyword}] 搜索失败: {e}')
+        return None
 
 
 def best_play_url(room):
@@ -187,10 +213,10 @@ def run(dry_run=False, pages_override=None):
                 except Exception as e:
                     print(f'  [{s}] 整个来源失败: {e}')
 
-    # 2. 抓取指定个人主播（直接从热门列表中匹配）
+    # 2. 抓取指定个人主播（使用搜索API）
     if user_sources:
         for u in user_sources:
-            room = fetch_user(u, all_hot_rooms=all_rooms)
+            room = fetch_user(u)
             if room and room.get('id'):
                 all_rooms[room['id']] = room
 
