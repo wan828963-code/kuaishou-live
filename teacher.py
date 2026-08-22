@@ -14,11 +14,12 @@ M3U_PATH = os.path.join(BASE_DIR, 'teacher.m3u')
 
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 
-# ===== 在这里配置你要的主播 =====
-TEACHER_ID = "SJJC6688"       # 主播ID
-TEACHER_NAME = "爽姐讲财"      # 显示名称
-GROUP_TITLE = "财经"           # 分组
-# ================================
+# ===== 在这里配置你要的主播列表 =====
+TEACHERS = [
+    {"id": "SJJC6688", "name": "爽姐讲财", "group": "财经"},
+    {"id": "Diyicaituan", "name": "第一财团", "group": "财经"},
+]
+# ===================================
 
 
 def fetch_live_url(user_id):
@@ -30,7 +31,7 @@ def fetch_live_url(user_id):
         with urllib.request.urlopen(req, timeout=15) as r:
             html = r.read().decode('utf-8', errors='ignore')
     except Exception as e:
-        print(f'获取页面失败: {e}')
+        print(f'获取页面失败 ({user_id}): {e}')
         return None
     
     # 方法1：从 __INITIAL_STATE__ 提取
@@ -55,32 +56,47 @@ def fetch_live_url(user_id):
     return None
 
 
-def generate_m3u(url):
-    """生成 teacher.m3u"""
+def generate_m3u():
+    """生成 teacher.m3u，包含所有配置的主播"""
     lines = [
         '#EXTM3U',
         f'# 生成时间: {time.strftime("%Y-%m-%d %H:%M:%S")}',
-        f'# 主播: {TEACHER_NAME} ({TEACHER_ID})',
-        f'#EXTINF:-1 tvg-logo="" group-title="{GROUP_TITLE}" tvg-id="{TEACHER_ID}", {TEACHER_NAME}',
+        f'# 共 {len(TEACHERS)} 个主播',
+        ''
     ]
     
-    if url:
-        lines.append(url)
-        print(f'✅ {TEACHER_NAME} 直播地址获取成功')
-    else:
-        lines.append('# 主播当前未开播，请稍后再试')
-        print(f'❌ {TEACHER_NAME} 当前未开播')
+    online_count = 0
+    for teacher in TEACHERS:
+        user_id = teacher["id"]
+        name = teacher["name"]
+        group = teacher["group"]
+        
+        print(f'正在获取 {name} ({user_id})...')
+        url = fetch_live_url(user_id)
+        
+        if url:
+            lines.append(f'#EXTINF:-1 tvg-logo="" group-title="{group}" tvg-id="{user_id}", {name}')
+            lines.append(url)
+            lines.append('')
+            print(f'✅ {name} 直播地址获取成功')
+            online_count += 1
+        else:
+            lines.append(f'#EXTINF:-1 tvg-logo="" group-title="{group}" tvg-id="{user_id}", {name} (未开播)')
+            lines.append('# 当前未开播，请稍后再试')
+            lines.append('')
+            print(f'❌ {name} 当前未开播')
+    
+    lines.append(f'# 共 {len(TEACHERS)} 个主播，在线 {online_count} 个')
     
     with open(M3U_PATH, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
     
-    print(f'已写入 {M3U_PATH}')
+    print(f'已写入 {M3U_PATH}，在线 {online_count}/{len(TEACHERS)}')
 
 
 def main():
-    print(f'正在获取 {TEACHER_NAME} ({TEACHER_ID}) 的直播地址...')
-    url = fetch_live_url(TEACHER_ID)
-    generate_m3u(url)
+    print(f'开始获取 {len(TEACHERS)} 个主播的直播地址...')
+    generate_m3u()
 
 
 if __name__ == '__main__':
