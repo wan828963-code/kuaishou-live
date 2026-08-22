@@ -5,7 +5,7 @@
 
 支持两种模式：
 1. 热门/分类大池子：GET https://live.kuaishou.com/live_api/hot/list
-2. 指定单个主播：使用搜索API查找
+2. 指定单个主播：直接解析网页源码提取播放地址
 
 用法：
     python3 update_m3u.py              # 按 sources.txt 抓取并写 kuaishou_live.m3u
@@ -14,6 +14,7 @@
 """
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -113,41 +114,43 @@ def fetch_page(source, page):
 
 
 def fetch_user(user_id):
-    """专门针对认证官方/媒体账号的精确搜索解析"""
-    # 转换为搜索 API（同时支持输入 '第一财团' 或 'Diyicaituan'）
-    search_keyword = '第一财团' if 'diyicaituan' in user_id.lower() else user_id
-    encoded_kw = urllib.parse.quote(search_keyword)
-    url = f'https://live.kuaishou.com/live_api/search/author?keyword={encoded_kw}&page=1&pageSize=10'
-    
+    """直接解析网页源码，强行提取直播 CDN 链接（绕过 API 风控限制）"""
+    url = f'https://live.kuaishou.com/u/{user_id}'
     headers = {
         'User-Agent': UA,
-        'Referer': 'https://live.kuaishou.com/search/author',
+        'Referer': 'https://live.kuaishou.com/',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
     }
-    
     try:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
-            body = json.load(r)
+            html = r.read().decode('utf-8', errors='ignore')
             
-        authors = body.get('data', {}).get('list', [])
-        for item in authors:
-            nick = item.get('author', {}).get('name', '')
-            kwai_id = item.get('author', {}).get('kwaiId', '')
-            
-            # 精确匹配“第一财团”
-            if search_keyword in nick or 'Diyicaituan' in kwai_id:
-                if not item.get('living'):
-                    print(f'  [主播 {nick}] 搜索到了账号，但当前处于未开播状态')
-                    return None
-                    
-                print(f'  [主播 {nick}] 成功查找到实时直播流！')
-                return item
-                
-        print(f'  [主播 {search_keyword}] 未找到相关开播账号')
-        return None
+        # 1. 直接用正则搜索页面中藏着的所有 .m3u8 或 .flv 播放直链
+        m3u8_matches = re.findall(r'https?://[^\s"\'\\]+?\.(?:m3u8|flv)[^\s"\'\\]*', html)
         
+        if not m3u8_matches:
+            print(f'  [主播 {user_id}] 页面未解析到播放地址（可能未开播或触发极强风控）')
+            return None
+
+        # 清理转义字符 (例如 \u002F -> /)
+        clean_urls = []
+        for u in m3u8_matches:
+            u_clean = u.encode().decode('unicode-escape').replace('\\', '')
+            clean_urls.append(u_clean)
+
+        print(f'  [主播 {user_id}] 强行从网页 HTML 中提取到直播流！')
+        
+        # 伪造符合脚本格式的 room 对象
+        return {
+            'id': user_id,
+            'caption': '第一财团直播间',
+            'author': {'name': '第一财团', 'id': user_id},
+            'gameInfo': {'name': '财经'},
+            'playUrls': [{'adaptationSet': {'representation': [{'url': clean_urls[0], 'level': 1, 'bitrate': 1000}]}}]
+        }
     except Exception as e:
-        print(f'  [主播 {search_keyword}] 搜索失败: {e}')
+        print(f'  [主播 {user_id}] 页面抓取失败: {e}')
         return None
 
 
@@ -213,7 +216,7 @@ def run(dry_run=False, pages_override=None):
                 except Exception as e:
                     print(f'  [{s}] 整个来源失败: {e}')
 
-    # 2. 抓取指定个人主播（使用搜索API）
+    # 2. 抓取指定个人主播（使用HTML页面解析）
     if user_sources:
         for u in user_sources:
             room = fetch_user(u)
