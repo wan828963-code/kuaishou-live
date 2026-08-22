@@ -112,14 +112,11 @@ def fetch_page(source, page):
     return page, body.get('data', {}).get('list', [])
 
 
-def fetch_user(user_id):
-    """使用快手官方个人页 GET API 获取直播流，避免 POST GraphQL 触发 502 拦截"""
-    # 转换为标准的 GET API
+def fetch_user(user_id, all_hot_rooms=None):
+    """获取指定主播：优先调个人 API，若被风控（海外IP拦截），则在热门列表中兜底搜索"""
     url = f'https://live.kuaishou.com/live_api/profile/public?principalId={user_id}'
-    
     timestamp = str(int(time.time() * 1000))
     fake_did = f"web_{timestamp}999"
-    
     headers = {
         'User-Agent': UA,
         'Referer': f'https://live.kuaishou.com/u/{user_id}',
@@ -134,23 +131,30 @@ def fetch_user(user_id):
         data = body.get('data', {})
         live_data = data.get('live')
         
-        # 如果未在播或未找到直播数据
-        if not live_data or not live_data.get('living'):
-            user_name = data.get('userInfo', {}).get('name') or user_id
-            print(f'  [主播 {user_name}({user_id})] 当前未开播')
-            return None
+        # 1. 个人 API 成功获取
+        if live_data and live_data.get('living'):
+            if 'author' not in live_data and 'userInfo' in data:
+                live_data['author'] = data['userInfo']
+            author_name = live_data.get('author', {}).get('name') or user_id
+            print(f'  [主播 {author_name}({user_id})] 通过个人接口获取成功！')
+            return live_data
+    except Exception:
+        pass
+
+    # 2. 兜底方案：如果个人接口被快手风控拦截，从热门列表的 2000+ 房间中寻找该主播
+    if all_hot_rooms:
+        for lid, room in all_hot_rooms.items():
+            author = room.get('author') or {}
+            kwai_id = author.get('id') or author.get('principalId') or ''
+            name = author.get('name') or ''
             
-        # 补齐用户信息与播放列表格式
-        if 'author' not in live_data and 'userInfo' in data:
-            live_data['author'] = data['userInfo']
-            
-        author_name = live_data.get('author', {}).get('name') or user_id
-        print(f'  [主播 {author_name}({user_id})] 成功获取直播流！')
-        return live_data
-        
-    except Exception as e:
-        print(f'  [主播 {user_id}] 抓取失败: {e}')
-        return None
+            # 比对 ID 或 账号/昵称
+            if user_id.lower() in kwai_id.lower() or user_id in name:
+                print(f'  [主播 {name}({user_id})] 从热门列表中匹配成功！')
+                return room
+
+    print(f'  [主播 {user_id}] 未开播或未在热门列表中找到')
+    return None
 
 
 def best_play_url(room):
@@ -215,14 +219,12 @@ def run(dry_run=False, pages_override=None):
                 except Exception as e:
                     print(f'  [{s}] 整个来源失败: {e}')
 
-    # 2. 抓取指定个人主播
+    # 2. 抓取指定个人主播（传入热门列表做兜底）
     if user_sources:
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            futs = {pool.submit(fetch_user, u): u for u in user_sources}
-            for fut in as_completed(futs):
-                room = fut.result()
-                if room and room.get('id'):
-                    all_rooms[room['id']] = room
+        for u in user_sources:
+            room = fetch_user(u, all_hot_rooms=all_rooms)
+            if room and room.get('id'):
+                all_rooms[room['id']] = room
 
     entries = []
     skipped_no_url = 0
