@@ -3,9 +3,18 @@
 """
 快手游戏直播 m3u 更新器（纯 HTTP，无浏览器、无签名）
 
-支持两种模式：
-1. 热门/分类大池子：GET https://live.kuaishou.com/live_api/hot/list
-2. 指定单个主播：直接解析网页源码提取播放地址
+数据源（与 https://live.kuaishou.com/live/HOT 页面下拉加载完全一致）：
+    GET https://live.kuaishou.com/live_api/hot/list?type=HOT&filterType=0&page=N&pageSize=24
+    - 无需 Cookie / 签名，任意 User-Agent 均可（实测裸请求也 200）
+    - 每页固定返回 50 个在播房间；页面下拉"加载更多"就是 page 递增翻同一个接口
+    - 默认并发翻 50 页（约 2500 条原始记录，去重后约 2000 个不重复房间），
+      8 线程实测约 7 秒、零失败，无风控
+    - 每条记录自带 playUrls：4 档清晰度（高清/超清/蓝光4M/蓝光质臻）的 CDN 直链
+      （tx-origin.pull.yximgs.com 等，FLV over HTTP，带 txSecret 签名，24 小时有效）
+
+输出 m3u 条目格式：
+    #EXTINF:-1 tvg-logo="" group-title="分类" tvg-id="房间号", 用户昵称-房间名
+    <该房间最高清晰度 CDN 播放地址>
 
 用法：
     python3 update_m3u.py              # 按 sources.txt 抓取并写 kuaishou_live.m3u
@@ -14,10 +23,8 @@
 """
 import json
 import os
-import re
 import sys
 import time
-import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -28,14 +35,13 @@ SOURCES_PATH = os.path.join(BASE_DIR, 'sources.txt')
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36')
 
-DEFAULT_PAGES = 50       # HOT 列表默认抓取页数
-MAX_PAGES = 50           # 单来源最多抓取页数上限
-PAGE_WORKERS = 8         # 单来源内并发翻页线程数
+DEFAULT_PAGES = 50       # HOT 列表默认抓取页数（50 房间/页，去重后约 2000 房间）
+MAX_PAGES = 50           # 单来源最多抓取页数上限（服务端 hasMore 恒为 true，靠此截断）
+PAGE_WORKERS = 8         # 单来源内并发翻页线程数（实测 8 线程 50 页约 7 秒、零失败）
 MAX_SOURCE_WORKERS = 2   # 多来源间并发
 REQUEST_TIMEOUT = 20
 
 HOT_API = 'https://live.kuaishou.com/live_api/hot/list'
-USER_API = 'https://live.kuaishou.com/live_api/profile/public'
 
 
 def parse_args(argv):
@@ -57,48 +63,36 @@ def parse_args(argv):
 
 
 def load_sources(pages_override=None):
-    """解析 sources.txt，支持 HOT 和 中文主播昵称/URL"""
+    """解析 sources.txt，支持：
+       HOT / HOT:50 / https://live.kuaishou.com/live/HOT:50（:N 表示抓 N 页）
+    """
     if not os.path.exists(SOURCES_PATH):
         raise SystemExit(f'缺少来源配置文件 {SOURCES_PATH}')
-    
-    hot_sources = []
-    user_sources = []
-
+    out = []
     for line in open(SOURCES_PATH, encoding='utf-8'):
         line = line.strip()
         if not line or line.startswith('#'):
             continue
-        
-        if '/u/' in line:
-            user_id = line.split('/u/')[-1].split('/')[0].split('?')[0]
-            if user_id:
-                user_sources.append(user_id)
-        elif not line.startswith('HOT'):
-            # 直接填中文名字（如：第一财团）
-            user_sources.append(line)
-        else:
-            pages = DEFAULT_PAGES if pages_override is None else pages_override
-            name = line
-            if ':' in line.split('/')[-1]:
-                name, _, pages_s = line.rpartition(':')
-                try:
-                    pages = int(pages_s)
-                except ValueError:
-                    pass
-            name = name.split('/live/')[-1].rstrip('/') or 'HOT'
-            if pages_override is not None:
-                pages = pages_override
-            pages = max(1, min(pages, MAX_PAGES))
-            hot_sources.append((name.upper(), pages))
-
-    if not hot_sources and not user_sources:
+        pages = DEFAULT_PAGES if pages_override is None else pages_override
+        name = line
+        if ':' in line.split('/')[-1]:
+            name, _, pages_s = line.rpartition(':')
+            try:
+                pages = int(pages_s)
+            except ValueError:
+                pass
+        name = name.split('/live/')[-1].rstrip('/') or 'HOT'
+        if pages_override is not None:
+            pages = pages_override
+        pages = max(1, min(pages, MAX_PAGES))
+        out.append((name.upper(), pages))
+    if not out:
         raise SystemExit('sources.txt 中没有有效来源')
-        
-    return hot_sources, user_sources
+    return out
 
 
 def fetch_page(source, page):
-    """抓取一页热门直播列表。"""
+    """抓取一页热门直播列表，返回 (page, rooms) 或 (page, [])。"""
     url = f'{HOT_API}?type={source}&filterType=0&page={page}&pageSize=24'
     req = urllib.request.Request(url, headers={
         'User-Agent': UA,
@@ -111,47 +105,6 @@ def fetch_page(source, page):
         print(f'  [{source}] 第{page}页失败: {e}')
         return page, []
     return page, body.get('data', {}).get('list', [])
-
-
-def fetch_user(user_id):
-    """直接解析网页源码，强行提取直播 CDN 链接（绕过 API 风控限制）"""
-    url = f'https://live.kuaishou.com/u/{user_id}'
-    headers = {
-        'User-Agent': UA,
-        'Referer': 'https://live.kuaishou.com/',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
-    }
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
-            html = r.read().decode('utf-8', errors='ignore')
-            
-        # 1. 直接用正则搜索页面中藏着的所有 .m3u8 或 .flv 播放直链
-        m3u8_matches = re.findall(r'https?://[^\s"\'\\]+?\.(?:m3u8|flv)[^\s"\'\\]*', html)
-        
-        if not m3u8_matches:
-            print(f'  [主播 {user_id}] 页面未解析到播放地址（可能未开播或触发极强风控）')
-            return None
-
-        # 清理转义字符 (例如 \u002F -> /)
-        clean_urls = []
-        for u in m3u8_matches:
-            u_clean = u.encode().decode('unicode-escape').replace('\\', '')
-            clean_urls.append(u_clean)
-
-        print(f'  [主播 {user_id}] 强行从网页 HTML 中提取到直播流！')
-        
-        # 伪造符合脚本格式的 room 对象
-        return {
-            'id': user_id,
-            'caption': '第一财团直播间',
-            'author': {'name': '第一财团', 'id': user_id},
-            'gameInfo': {'name': '财经'},
-            'playUrls': [{'adaptationSet': {'representation': [{'url': clean_urls[0], 'level': 1, 'bitrate': 1000}]}}]
-        }
-    except Exception as e:
-        print(f'  [主播 {user_id}] 页面抓取失败: {e}')
-        return None
 
 
 def best_play_url(room):
@@ -180,7 +133,7 @@ def room_to_entry(room):
 
 
 def fetch_source(source, pages):
-    """并发翻页抓取分类来源。"""
+    """并发翻页抓取一个来源，按页序合并去重（首次出现保留）。"""
     rooms = {}
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=min(PAGE_WORKERS, pages)) as pool:
@@ -197,31 +150,21 @@ def fetch_source(source, pages):
 
 
 def run(dry_run=False, pages_override=None):
-    hot_sources, user_sources = load_sources(pages_override)
-    total_pages = sum(p for _, p in hot_sources)
-    print(f'开始抓取 {len(hot_sources)} 个分类（共 {total_pages} 页），{len(user_sources)} 个自定义主播...')
+    sources = load_sources(pages_override)
+    total_pages = sum(p for _, p in sources)
+    print(f'开始抓取 {len(sources)} 个来源（共 {total_pages} 页）...')
 
     all_rooms = {}
-    
-    # 1. 抓取分类列表
-    if hot_sources:
-        with ThreadPoolExecutor(max_workers=MAX_SOURCE_WORKERS) as pool:
-            futs = {pool.submit(fetch_source, s, p): s for s, p in hot_sources}
-            for fut, s in futs.items():
-                try:
-                    rooms = fut.result()
-                    for lid, room in rooms.items():
-                        if lid not in all_rooms:
-                            all_rooms[lid] = room
-                except Exception as e:
-                    print(f'  [{s}] 整个来源失败: {e}')
-
-    # 2. 抓取指定个人主播（使用HTML页面解析）
-    if user_sources:
-        for u in user_sources:
-            room = fetch_user(u)
-            if room and room.get('id'):
-                all_rooms[room['id']] = room
+    with ThreadPoolExecutor(max_workers=MAX_SOURCE_WORKERS) as pool:
+        futs = {pool.submit(fetch_source, s, p): s for s, p in sources}
+        for fut, s in futs.items():
+            try:
+                rooms = fut.result()
+                for lid, room in rooms.items():
+                    if lid not in all_rooms:
+                        all_rooms[lid] = room
+            except Exception as e:
+                print(f'  [{s}] 整个来源失败: {e}')
 
     entries = []
     skipped_no_url = 0
@@ -232,21 +175,21 @@ def run(dry_run=False, pages_override=None):
             continue
         entries.append((entry, url))
 
-    print(f'共抓到 {len(all_rooms)} 个有效开播房间，'
-          f'其中 {len(entries)} 个成功解析出播放地址'
+    print(f'共抓到 {len(all_rooms)} 个房间，'
+          f'其中 {len(entries)} 个有播放地址'
           + (f'，{skipped_no_url} 个无地址被跳过' if skipped_no_url else ''))
 
     if dry_run:
         print(f'[dry-run] 将写入 {len(entries)} 条 m3u 条目到 {M3U_PATH}')
         for entry, url in entries[:5]:
             print('  ' + entry)
-            print('    ' + (url[:120] if url else '') + '...')
+            print('    ' + url[:120] + '...')
         return
 
     lines = ['#EXTM3U',
              f'# 生成时间: {time.strftime("%Y-%m-%d %H:%M:%S")}',
              f'# 房间数: {len(entries)}',
-             f'# 数据源: 快手直播 (热门分类 + 独立主播配置)']
+             f'# 数据源: https://live.kuaishou.com/live/HOT (live_api/hot/list，{total_pages}页并发)']
     for entry, url in entries:
         lines.append(entry)
         lines.append(url)
