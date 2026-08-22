@@ -141,7 +141,7 @@ def fetch_user(user_id):
 
 
 def best_play_url(room):
-    """从 playUrls 中取最高清晰度 CDN 直链。"""
+    """从 playUrls 中取最高清晰度 CDN 直链（优先 level 最大，其次码率最大）。"""
     reps = []
     for pu in room.get('playUrls') or []:
         reps.extend((pu.get('adaptationSet') or {}).get('representation') or [])
@@ -235,98 +235,6 @@ def run(dry_run=False, pages_override=None):
              f'# 生成时间: {time.strftime("%Y-%m-%d %H:%M:%S")}',
              f'# 房间数: {len(entries)}',
              f'# 数据源: 快手直播 (热门分类 + 独立主播配置)']
-    for entry, url in entries:
-        lines.append(entry)
-        lines.append(url)
-    with open(M3U_PATH, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(lines) + '\n')
-    print(f'已写入 {len(entries)} 条到 {M3U_PATH}')
-
-
-if __name__ == '__main__':
-    dry_run, pages_override = parse_args(sys.argv[1:])
-    run(dry_run=dry_run, pages_override=pages_override)    """从 playUrls 中取最高清晰度 CDN 直链（优先 level 最大，其次码率最大）。"""
-    reps = []
-    for pu in room.get('playUrls') or []:
-        reps.extend((pu.get('adaptationSet') or {}).get('representation') or [])
-    if not reps:
-        return None
-    reps = sorted(reps, key=lambda x: (x.get('level', 0), x.get('bitrate', 0)))
-    return reps[-1].get('url')
-
-
-def room_to_entry(room):
-    """把房间 dict 转成 (tvg_id, entry_text, url) 三元组。"""
-    live_id = room.get('id') or ''
-    author = (room.get('author') or {})
-    nick = author.get('name') or ''
-    caption = (room.get('caption') or '').strip() or '直播间'
-    game = ((room.get('gameInfo') or {}).get('name') or '').strip() or '分类'
-    title = f'{nick}-{caption}'
-    url = best_play_url(room)
-    entry = (f'#EXTINF:-1 tvg-logo="" group-title="{game}" '
-             f'tvg-id="{live_id}", {title}')
-    return live_id, entry, url
-
-
-def fetch_source(source, pages):
-    """并发翻页抓取一个来源，按页序合并去重（首次出现保留）。"""
-    rooms = {}
-    t0 = time.time()
-    with ThreadPoolExecutor(max_workers=min(PAGE_WORKERS, pages)) as pool:
-        futs = {pool.submit(fetch_page, source, p): p for p in range(1, pages + 1)}
-        for fut in as_completed(futs):
-            page, items = fut.result()
-            for room in items:
-                lid = room.get('id')
-                if lid and lid not in rooms:
-                    rooms[lid] = room
-    print(f'  [{source}] {pages}页抓完: {len(rooms)} 个不重复房间，'
-          f'用时 {time.time() - t0:.1f}s')
-    return rooms
-
-
-def run(dry_run=False, pages_override=None):
-    sources = load_sources(pages_override)
-    total_pages = sum(p for _, p in sources)
-    print(f'开始抓取 {len(sources)} 个来源（共 {total_pages} 页）...')
-
-    all_rooms = {}
-    with ThreadPoolExecutor(max_workers=MAX_SOURCE_WORKERS) as pool:
-        futs = {pool.submit(fetch_source, s, p): s for s, p in sources}
-        for fut, s in futs.items():
-            try:
-                rooms = fut.result()
-                for lid, room in rooms.items():
-                    if lid not in all_rooms:
-                        all_rooms[lid] = room
-            except Exception as e:
-                print(f'  [{s}] 整个来源失败: {e}')
-
-    entries = []
-    skipped_no_url = 0
-    for lid, room in all_rooms.items():
-        _, entry, url = room_to_entry(room)
-        if not url:
-            skipped_no_url += 1
-            continue
-        entries.append((entry, url))
-
-    print(f'共抓到 {len(all_rooms)} 个房间，'
-          f'其中 {len(entries)} 个有播放地址'
-          + (f'，{skipped_no_url} 个无地址被跳过' if skipped_no_url else ''))
-
-    if dry_run:
-        print(f'[dry-run] 将写入 {len(entries)} 条 m3u 条目到 {M3U_PATH}')
-        for entry, url in entries[:5]:
-            print('  ' + entry)
-            print('    ' + url[:120] + '...')
-        return
-
-    lines = ['#EXTM3U',
-             f'# 生成时间: {time.strftime("%Y-%m-%d %H:%M:%S")}',
-             f'# 房间数: {len(entries)}',
-             f'# 数据源: https://live.kuaishou.com/live/HOT (live_api/hot/list，{total_pages}页并发)']
     for entry, url in entries:
         lines.append(entry)
         lines.append(url)
