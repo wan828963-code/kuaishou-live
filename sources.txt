@@ -11,5 +11,4 @@
 # live_api/hot/list，无需登录、无需签名，纯 HTTP 即可，8 线程并发约 7 秒。
 # ============================================================
 HOT:50
-USER:SJJC6688
-USER:Diyicaituan
+https://live.kuaishou.com/u/Diyicaituan
