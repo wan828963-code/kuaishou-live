@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-抓取指定快手主播的直播地址，生成 teacher.m3u
-使用 update_m3u.py 同款 API 接口
+抓取指定快手主播的直播地址（财经分类专用）
+使用快手财经分类 API 接口
 """
 import json
 import os
-import sys
 import time
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 M3U_PATH = os.path.join(BASE_DIR, 'teacher.m3u')
@@ -18,7 +16,6 @@ UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36')
 
 REQUEST_TIMEOUT = 20
-HOT_API = 'https://live.kuaishou.com/live_api/hot/list'
 
 # ===== 在这里配置你要的主播列表 =====
 TEACHERS = [
@@ -28,14 +25,23 @@ TEACHERS = [
 # ===================================
 
 
-def fetch_room_by_id(user_id):
-    """翻页查找指定主播的房间数据"""
-    for page in range(1, 30):
-        url = f'{HOT_API}?type=HOT&filterType=0&page={page}&pageSize=50'
+def fetch_room_by_category(user_id):
+    """
+    从快手财经分类接口获取所有在播房间，查找指定主播
+    """
+    # 财经分类接口（与热门接口结构相同）
+    api_url = 'https://live.kuaishou.com/live_api/category/finance/list'
+    
+    max_pages = 20
+    page_size = 50
+    
+    for page in range(1, max_pages + 1):
+        url = f'{api_url}?filterType=0&page={page}&pageSize={page_size}'
         req = urllib.request.Request(url, headers={
             'User-Agent': UA,
-            'Referer': 'https://live.kuaishou.com/live/HOT',
+            'Referer': 'https://live.kuaishou.com/live/finance',
         })
+        
         try:
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
                 body = json.load(r)
@@ -48,7 +54,6 @@ def fetch_room_by_id(user_id):
             break
         
         for room in room_list:
-            # 用多种方式匹配 ID
             room_id = room.get('id', '')
             author = room.get('author', {})
             author_id = author.get('id', '')
@@ -92,8 +97,8 @@ def generate_m3u():
         name = teacher["name"]
         group = teacher["group"]
         
-        print(f'🔍 正在查找 {name} ({user_id})...')
-        room = fetch_room_by_id(user_id)
+        print(f'🔍 正在财经分类中查找 {name} ({user_id})...')
+        room = fetch_room_by_category(user_id)
         stream_url = get_best_url(room)
         
         if stream_url:
@@ -121,11 +126,12 @@ def generate_m3u():
 
 def main():
     print('=' * 40)
-    print('🚀 快手专属直播源更新工具')
+    print('🚀 快手财经主播专属直播源更新工具')
     print(f'📋 共配置 {len(TEACHERS)} 个主播')
     print('=' * 40)
     generate_m3u()
     print('=' * 40)
+    print('✅ 更新完成！')
 
 
 if __name__ == '__main__':
