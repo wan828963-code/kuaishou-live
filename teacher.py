@@ -30,7 +30,7 @@ def fetch_live_url(user_id):
         with urllib.request.urlopen(req, timeout=15) as r:
             html = r.read().decode('utf-8', errors='ignore')
     except Exception as e:
-        print(f'  获取页面失败: {e}')
+        print('  获取页面失败:', e)
         return None
     
     # 方法1：从 __INITIAL_STATE__ 提取
@@ -63,8 +63,8 @@ def fetch_live_url(user_id):
 def generate_m3u():
     lines = [
         '#EXTM3U',
-        f'# 生成时间: {time.strftime("%Y-%m-%d %H:%M:%S")}',
-        f'# 共 {len(TEACHERS)} 个主播',
+        '# 生成时间: ' + time.strftime("%Y-%m-%d %H:%M:%S"),
+        '# 共 ' + str(len(TEACHERS)) + ' 个主播',
         ''
     ]
     
@@ -76,39 +76,43 @@ def generate_m3u():
         name = teacher["name"]
         group = teacher["group"]
         
-        print(f'🔍 正在获取 {name} ({user_id})...')
+        print('正在获取 ' + name + ' (' + user_id + ')...')
         stream_url = fetch_live_url(user_id)
         
         if stream_url:
-            lines.append(f'#EXTINF:-1 tvg-logo="" group-title="{group}" tvg-id="{user_id}", {name}')
+            lines.append('#EXTINF:-1 tvg-logo="" group-title="' + group + '" tvg-id="' + user_id + '", ' + name)
             lines.append(stream_url)
             lines.append('')
-            print(f'✅ {name} 成功')
+            print('成功: ' + name)
             online_count += 1
             online_list.append(name)
         else:
-            lines.append(f'#EXTINF:-1 tvg-logo="" group-title="{group}" tvg-id="{user_id}", {name} ⏸️')
+            lines.append('#EXTINF:-1 tvg-logo="" group-title="' + group + '" tvg-id="' + user_id + '", ' + name + ' (未开播)')
             lines.append('# 未开播')
             lines.append('')
-            print(f'❌ {name} 未开播')
+            print('未开播: ' + name)
     
     if online_list:
-        lines.append(f'# ✅ 在线：{", ".join(online_list)}')
-    lines.append(f'# 📊 在线 {online_count}/{len(TEACHERS)}')
+        lines.append('# 在线主播：' + ', '.join(online_list))
+    lines.append('# 共 ' + str(len(TEACHERS)) + ' 个主播，在线 ' + str(online_count) + ' 个')
     
     with open(M3U_PATH, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
     
-    print(f'📁 已写入 {M3U_PATH}')
+    print('已写入 ' + M3U_PATH)
 
 
 def main():
     print('=' * 40)
-    print('🚀 快手专属直播源更新工具')
-    print(f'📋 共 {len(TEACHERS)} 个主播')
+    print('快手专属直播源更新工具')
+    print('共 ' + str(len(TEACHERS)) + ' 个主播')
     print('=' * 40)
     generate_m3u()
     print('=' * 40)
+
+
+if __name__ == '__main__':
+    main()    print('=' * 40)
 
 
 if __name__ == '__main__':
