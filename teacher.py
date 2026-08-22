@@ -17,7 +17,7 @@ UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 # ===== 在这里配置你要的主播列表 =====
 TEACHERS = [
     {"id": "SJJC6688", "name": "爽姐讲财", "group": "财经"},
-    {"id": "Diyicaituan", "name": "第一财团", "group": "财经"},
+    {"id": "KaIEMRmH", "name": "第一财团", "group": "财经"},
 ]
 # ===================================
 
