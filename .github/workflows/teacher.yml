@@ -22,6 +22,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: 安装 Playwright
+        run: |
+          pip install playwright
+          playwright install chromium
+
       - name: 运行老师脚本
         run: python3 teacher.py
 
